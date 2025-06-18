@@ -1,0 +1,13 @@
+{
+  "name": "Copy of Copy of Nightlife Hotspot Finder",
+  "description": "Discover popular bars and venues in the city based on selected time, day, and activity. Uses historical and simulated real-time popularity data.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "permissions": {
+    "location": {
+      "description": "We use your location to show you venues nearby."
+    }
+  },
+  "prompt": ""
+}
