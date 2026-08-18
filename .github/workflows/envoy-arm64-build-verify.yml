@@ -1,0 +1,97 @@
+name: Envoy ARM64 Build Verify
+
+on:
+  push:
+    branches: [envoy-arm64-build-verify]
+    paths: [.github/workflows/envoy-arm64-build-verify.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 300
+    env:
+      ENVOY_COMMIT: e01bd1b8f05691979db45d8de17a87a1a43a6405
+      ENVOY_BUILD_IMAGE: docker.io/envoyproxy/envoy-build@sha256:f1af63ebb1aa49a4ccd2bb4ae3bf94c5bc3221139538e21b365c9bea7575f702
+      EXPECTED_BAZEL_VERSION: 8.7.0
+    steps:
+      - name: Verify host
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          docker version
+          nproc
+          free -h
+
+      - name: Fetch exact Envoy source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init envoy
+          git -C envoy remote add origin https://github.com/envoyproxy/envoy.git
+          git -C envoy fetch --depth=1 origin "${ENVOY_COMMIT}"
+          git -C envoy checkout --detach FETCH_HEAD
+          test "$(git -C envoy rev-parse HEAD)" = "${ENVOY_COMMIT}"
+          test "$(tr -d '\n' < envoy/.bazelversion)" = "${EXPECTED_BAZEL_VERSION}"
+          grep -F "sha-devtools: f1af63ebb1aa49a4ccd2bb4ae3bf94c5bc3221139538e21b365c9bea7575f702" envoy/.github/config.yml
+          grep -F "repo: docker.io/envoyproxy/envoy-build" envoy/.github/config.yml
+
+      - name: Pull exact image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "${ENVOY_BUILD_IMAGE}"
+          test "$(docker image inspect "${ENVOY_BUILD_IMAGE}" --format '{{.Architecture}}')" = arm64
+          test "$(docker image inspect "${ENVOY_BUILD_IMAGE}" --format '{{.Os}}')" = linux
+
+      - name: Build exact Envoy static target
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p receipt
+          J=$(nproc)
+          docker run --rm --entrypoint /bin/bash -e HOME=/tmp/envoy-home -v "$PWD/envoy:/source" -w /source "${ENVOY_BUILD_IMAGE}" -lc "set -euo pipefail; mkdir -p \"\$HOME\"; test \"\$(bazel --version | awk '{print \$2}')\" = '8.7.0'; bazel build //source/exe:envoy-static --jobs=${J}"
+          test -x envoy/bazel-bin/source/exe/envoy-static
+          sha256sum envoy/bazel-bin/source/exe/envoy-static | tee receipt/ENVOY_STATIC_SHA256.txt
+          file envoy/bazel-bin/source/exe/envoy-static | tee receipt/ENVOY_STATIC_FILE.txt
+
+      - name: Write cryptographic preflight receipt
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import datetime, hashlib, json, os, pathlib, platform, subprocess
+          p=pathlib.Path('envoy/bazel-bin/source/exe/envoy-static')
+          def sh(*a): return subprocess.check_output(a,text=True).strip()
+          d={
+            'status':'BUILD_PREFLIGHT_PASS',
+            'artifact_type':'ARM64_ENVOY_BUILD_PREFLIGHT_RECEIPT',
+            'created_at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            'scientific_data_collected':False,
+            'rg_assets_present':False,
+            'host_machine':platform.machine(),
+            'host_system':platform.system(),
+            'cpu_count':int(sh('nproc')),
+            'envoy_commit':os.environ['ENVOY_COMMIT'],
+            'build_image':os.environ['ENVOY_BUILD_IMAGE'],
+            'bazel_version_expected':os.environ['EXPECTED_BAZEL_VERSION'],
+            'build_target':'//source/exe:envoy-static',
+            'envoy_static_sha256':hashlib.sha256(p.read_bytes()).hexdigest(),
+            'boundary_sweep_executed':False,
+            'rg_instrumentation_executed':False
+          }
+          pathlib.Path('receipt/ARM64_ENVIRONMENT_INSTANCE_RECEIPT.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(d,indent=2,sort_keys=True))
+          PY
+          sha256sum receipt/ARM64_ENVIRONMENT_INSTANCE_RECEIPT.json | tee receipt/ARM64_ENVIRONMENT_INSTANCE_RECEIPT.sha256
+
+      - name: Upload receipt only
+        uses: actions/upload-artifact@v4
+        with:
+          name: envoy-arm64-build-preflight-receipt
+          path: receipt/
+          if-no-files-found: error
+          retention-days: 30
