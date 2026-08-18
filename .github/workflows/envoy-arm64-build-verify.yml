@@ -4,6 +4,9 @@ on:
   push:
     branches: [envoy-arm64-build-verify]
     paths: [.github/workflows/envoy-arm64-build-verify.yml]
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/envoy-arm64-build-verify.yml]
   workflow_dispatch:
 
 permissions:
