@@ -29,7 +29,7 @@ jobs:
           git hash-object rg_ext02_acados/preflight_adapter.py
           git hash-object rg_ext02_acados/environment_lock.py
           test "$(git hash-object rg_ext02_acados/run_exact_native_preflight.sh)" = '19ee0f3d6db9f610357a52235301f5ee98862724'
-          test "$(git hash-object rg_ext02_acados/preflight_adapter.py)" = '0b4442ea3638c9d0a2eed8a08931cdd7785cea40'
+          test "$(git hash-object rg_ext02_acados/preflight_adapter.py)" = '890b3635772cf95d5b48cccadc641929b0fffae6'
           test "$(git hash-object rg_ext02_acados/environment_lock.py)" = 'cdd50bd4f3774d18faf16494aa4d2ac585ef775b'
 
       - name: Execute exact frozen native preflight
@@ -65,7 +65,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: acados-native-preflight-init-reconcile-21376cb1
+          name: acados-native-preflight-api-fix-21376cb1
           path: rg_ext02_acados/preflight_out/
           if-no-files-found: error
           retention-days: 30
