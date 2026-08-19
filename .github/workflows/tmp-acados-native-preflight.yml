@@ -1,0 +1,79 @@
+name: Temporary acados native preflight carrier
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout carrier branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Record carrier byte identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          git hash-object rg_ext02_acados/run_exact_native_preflight.sh
+          git hash-object rg_ext02_acados/preflight_adapter.py
+          git hash-object rg_ext02_acados/environment_lock.py
+          test "$(git hash-object rg_ext02_acados/run_exact_native_preflight.sh)" = '19ee0f3d6db9f610357a52235301f5ee98862724'
+          test "$(git hash-object rg_ext02_acados/preflight_adapter.py)" = '03dcbe2eb1ebaa7b0484c677c42d5171ea1406f8'
+          test "$(git hash-object rg_ext02_acados/environment_lock.py)" = 'cdd50bd4f3774d18faf16494aa4d2ac585ef775b'
+
+      - name: Execute exact frozen native preflight
+        id: execute
+        shell: bash
+        run: |
+          set +e
+          mkdir -p rg_ext02_acados/preflight_out
+          bash rg_ext02_acados/run_exact_native_preflight.sh 2>&1 | tee rg_ext02_acados/preflight_out/CARRIER_EXECUTION.log
+          rc=${PIPESTATUS[0]}
+          echo "$rc" > rg_ext02_acados/preflight_out/CARRIER_EXIT_CODE.txt
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Seal carrier metadata
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p rg_ext02_acados/preflight_out
+          {
+            echo "carrier_repository=$GITHUB_REPOSITORY"
+            echo "carrier_sha=$GITHUB_SHA"
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+            echo "python=$(python --version 2>&1)"
+            echo "cmake=$(cmake --version | head -1)"
+            echo "gcc=$(gcc --version | head -1)"
+          } > rg_ext02_acados/preflight_out/CARRIER_METADATA.txt
+          find rg_ext02_acados/preflight_out -maxdepth 1 -type f ! -name CARRIER_FINAL_SHA256.txt -print0 | sort -z | xargs -0 sha256sum > rg_ext02_acados/preflight_out/CARRIER_FINAL_SHA256.txt
+
+      - name: Upload native preflight receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acados-native-preflight-21376cb1
+          path: rg_ext02_acados/preflight_out/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce terminal result
+        if: always()
+        shell: bash
+        run: |
+          rc="$(cat rg_ext02_acados/preflight_out/CARRIER_EXIT_CODE.txt 2>/dev/null || echo 99)"
+          echo "native preflight exit code: $rc"
+          test "$rc" = "0"
