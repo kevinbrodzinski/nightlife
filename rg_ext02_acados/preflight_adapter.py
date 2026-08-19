@@ -42,8 +42,9 @@ TARGET_DHDP = 861.6218310917248
 TARGET_REL_TOL = 0.005
 ACTIVE_LAMBDA_TOL = 1e-8
 
-# Immutable parent native attempt and frozen initialization-reconciliation identity.
+# Immutable parent native attempts and frozen initialization-reconciliation identity.
 PARENT_NATIVE_ARTIFACT_SHA256 = "c84d023af73c54c9f06923aafda70a118ea2acaf3c8cf042b2e200208c6b0279"
+API_CORRECTION_PARENT_ARTIFACT_SHA256 = "5975ad430143b437e6e6fc80c8d89cb86848d1c85b40150aaee1087a3aee5ad2"
 RECONCILIATION_PROTOCOL = {
     "center_initialization": "x_guess[n]=(1-n/N)*X0 for n=0..N; u_guess[n]=0 for n=0..N-1",
     "solve_order_u_max_N": [60.0, 59.99, 60.01],
@@ -142,7 +143,10 @@ def initialize_center_iterate(solver) -> dict:
 
 def solve_native(solver, u_max: float, phase: str) -> dict:
     set_symmetric_bound(solver, u_max)
-    status = int(solver.solve_for_x0(X0))
+    # At the selected acados commit solve_for_x0() returns u0, not the status.
+    # Fail-open-to-receipt here: read the canonical native status from solver.status.
+    _ = solver.solve_for_x0(X0, fail_on_nonzero_status=False)
+    status = int(solver.status)
     if status != 0:
         raise NativeSolveFailure(phase, u_max, status)
     cost = float(solver.get_cost())
@@ -198,6 +202,7 @@ def base_receipt(commit: str, submodule_assertions: dict, semantic_assertions: d
         "selected_commit": commit,
         "source_clean_before_preflight": True,
         "parent_native_artifact_sha256": PARENT_NATIVE_ARTIFACT_SHA256,
+        "api_semantics_parent_artifact_sha256": API_CORRECTION_PARENT_ARTIFACT_SHA256,
         "initialization_reconciliation_protocol": RECONCILIATION_PROTOCOL,
         "center_initialization_certificate": initialization,
         "submodule_assertions": submodule_assertions,
