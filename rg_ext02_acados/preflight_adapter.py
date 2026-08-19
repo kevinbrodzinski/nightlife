@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """RG-EXT-02 exact native acados non-scientific target preflight.
 
-This module is intentionally incapable of estimating alpha, beta, Theta, a class,
-p_contact, mass response, or any Resource Geometry boundary outcome. It verifies
-only the exact selected source semantics, native optimized value, actuator-bound
-activity, envelope derivative convention, and agreement with the preregistered
-independent numerical target before scientific condition 1.
+Initialization-reconciliation revision. This module remains intentionally incapable
+of estimating alpha, beta, Theta, a class, p_contact, mass response, or any
+Resource Geometry boundary outcome. It verifies only the exact selected source
+semantics, native optimized value, actuator-bound activity, envelope derivative
+convention, and agreement with the preregistered independent numerical target
+before scientific condition 1.
 """
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import importlib.util
 import json
@@ -40,6 +42,26 @@ TARGET_DHDP = 861.6218310917248
 TARGET_REL_TOL = 0.005
 ACTIVE_LAMBDA_TOL = 1e-8
 
+# Immutable parent native attempt and frozen initialization-reconciliation identity.
+PARENT_NATIVE_ARTIFACT_SHA256 = "c84d023af73c54c9f06923aafda70a118ea2acaf3c8cf042b2e200208c6b0279"
+RECONCILIATION_PROTOCOL = {
+    "center_initialization": "x_guess[n]=(1-n/N)*X0 for n=0..N; u_guess[n]=0 for n=0..N-1",
+    "solve_order_u_max_N": [60.0, 59.99, 60.01],
+    "center_attempts": 1,
+    "minus_attempts": 1,
+    "plus_attempts": 1,
+    "probe_seed": "identical deep copies of the successful full native center iterate via get_flat_iterate()/set_iterate()",
+    "anti_rescue": "no alternate guesses, random restarts, adaptive continuation, target-guided initialization, or parameter/solver changes",
+}
+
+
+class NativeSolveFailure(RuntimeError):
+    def __init__(self, phase: str, u_max: float, status: int):
+        self.phase = phase
+        self.u_max = float(u_max)
+        self.status = int(status)
+        super().__init__(f"acados solve failed at phase={phase}, u_max={u_max}: status={status}")
+
 
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
@@ -55,6 +77,22 @@ def git_output(repo: Path, *args: str) -> str:
 
 def relative_error(observed: float, target: float) -> float:
     return abs(observed - target) / max(abs(target), 1e-12)
+
+
+def scientific_boundary() -> dict:
+    return {
+        "alpha_estimated": False,
+        "beta_estimated": False,
+        "theta_estimated": False,
+        "predicted_class_computed": False,
+        "p_contact_predicted": False,
+        "mass_response_measured": False,
+        "boundary_H_observed": False,
+        "boundary_K_observed": False,
+        "primary_boundary_sweep_executed": False,
+        "condition_1_authorized": False,
+        "note": "Only the frozen non-scientific center and +/-0.01 N convention probes are authorized. No Resource Geometry scientific measurement is executed.",
+    }
 
 
 def load_selected_example(acados_root: Path):
@@ -83,11 +121,30 @@ def set_symmetric_bound(solver, u_max: float) -> None:
         solver.constraints_set(stage, "ubu", ub)
 
 
-def solve_native(solver, u_max: float) -> dict:
+def initialize_center_iterate(solver) -> dict:
+    """Deterministic frozen initialization using only X0 and the zero reference."""
+    x_guesses = []
+    for stage in range(N + 1):
+        tau = stage / N
+        x_guess = (1.0 - tau) * X0
+        solver.set(stage, "x", x_guess)
+        x_guesses.append(x_guess.tolist())
+    for stage in range(N):
+        solver.set(stage, "u", np.zeros(1))
+    return {
+        "rule": RECONCILIATION_PROTOCOL["center_initialization"],
+        "x_stage_0": x_guesses[0],
+        "x_stage_N": x_guesses[-1],
+        "u_guess": 0.0,
+        "uses_native_or_independent_solution_data": False,
+    }
+
+
+def solve_native(solver, u_max: float, phase: str) -> dict:
     set_symmetric_bound(solver, u_max)
     status = int(solver.solve_for_x0(X0))
     if status != 0:
-        raise RuntimeError(f"acados solve failed at u_max={u_max}: status={status}")
+        raise NativeSolveFailure(phase, u_max, status)
     cost = float(solver.get_cost())
 
     lower = []
@@ -112,6 +169,7 @@ def solve_native(solver, u_max: float) -> dict:
 
     lambda_sum = float(np.sum(lower) + np.sum(upper))
     return {
+        "phase": phase,
         "u_max": float(u_max),
         "p": float(u_max / DEFAULT_UMAX),
         "status": status,
@@ -132,6 +190,23 @@ def solve_native(solver, u_max: float) -> dict:
 
 def write_receipt(out: Path, receipt: dict) -> None:
     (out / "ACADOS_PREFLIGHT_RECEIPT.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+
+
+def base_receipt(commit: str, submodule_assertions: dict, semantic_assertions: dict, example_path: Path, model_path: Path, initialization: dict) -> dict:
+    return {
+        "artifact_type": "RG_EXT_02_ACADOS_NON_SCIENTIFIC_PREFLIGHT_RECEIPT",
+        "selected_commit": commit,
+        "source_clean_before_preflight": True,
+        "parent_native_artifact_sha256": PARENT_NATIVE_ARTIFACT_SHA256,
+        "initialization_reconciliation_protocol": RECONCILIATION_PROTOCOL,
+        "center_initialization_certificate": initialization,
+        "submodule_assertions": submodule_assertions,
+        "canonical_example": {"path": CANONICAL_EXAMPLE, "sha256": sha256_file(example_path)},
+        "canonical_model": {"path": CANONICAL_MODEL, "sha256": sha256_file(model_path)},
+        "semantic_assertions": semantic_assertions,
+        "runtime": {"python": sys.version, "platform": platform.platform(), "machine": platform.machine()},
+        "scientific_boundary": scientific_boundary(),
+    }
 
 
 def main() -> int:
@@ -187,9 +262,36 @@ def main() -> int:
     if not math.isclose(eps, 0.01, rel_tol=0.0, abs_tol=1e-15):
         raise SystemExit("Preflight epsilon is frozen at exactly 0.01 N")
 
-    minus = solve_native(solver, DEFAULT_UMAX - eps)
-    center = solve_native(solver, DEFAULT_UMAX)
-    plus = solve_native(solver, DEFAULT_UMAX + eps)
+    initialization = initialize_center_iterate(solver)
+    common = base_receipt(commit, submodule_assertions, semantic_assertions, example_path, model_path, initialization)
+
+    try:
+        # Frozen reconciliation solve order: center once, then +/- probes from identical center iterate copies.
+        center = solve_native(solver, DEFAULT_UMAX, "center")
+        center_iterate = copy.deepcopy(solver.get_flat_iterate())
+
+        solver.set_iterate(copy.deepcopy(center_iterate))
+        minus = solve_native(solver, DEFAULT_UMAX - eps, "minus")
+
+        solver.set_iterate(copy.deepcopy(center_iterate))
+        plus = solve_native(solver, DEFAULT_UMAX + eps, "plus")
+    except NativeSolveFailure as exc:
+        receipt = {
+            **common,
+            "status": "PREFLIGHT_RECONCILIATION_REQUIRED",
+            "native_solve_failure": {
+                "phase": exc.phase,
+                "u_max_N": exc.u_max,
+                "status": exc.status,
+                "attempt_count_for_phase": 1,
+                "alternate_initialization_attempted": False,
+                "retry_attempted": False,
+            },
+        }
+        write_receipt(out, receipt)
+        print(json.dumps({"status": receipt["status"], "failure": receipt["native_solve_failure"]}, indent=2))
+        return 3
+
     fd_dJ_du = (plus["J_star"] - minus["J_star"]) / (2.0 * eps)
     env_dJ_du = center["envelope_dJ_du_max"]
     env_dH_dp = center["envelope_dH_dp"]
@@ -205,31 +307,25 @@ def main() -> int:
         "dJ_du_max": {"target": TARGET_DJ, "observed": env_dJ_du, "relative_error": relative_error(env_dJ_du, TARGET_DJ)},
         "dH_dp": {"target": TARGET_DHDP, "observed": env_dH_dp, "relative_error": relative_error(env_dH_dp, TARGET_DHDP)},
     }
-    for v in target_comparison.values():
-        if isinstance(v, dict) and "relative_error" in v:
-            v["pass"] = bool(v["relative_error"] <= TARGET_REL_TOL)
-    target_pass = all(target_comparison[k]["pass"] for k in ["J_star", "dJ_du_max", "dH_dp"])
+    for value in target_comparison.values():
+        if isinstance(value, dict) and "relative_error" in value:
+            value["pass"] = bool(value["relative_error"] <= TARGET_REL_TOL)
+    target_pass = all(target_comparison[key]["pass"] for key in ["J_star", "dJ_du_max", "dH_dp"])
     active_pass = bool(center["lambda_total_bound_sum"] > ACTIVE_LAMBDA_TOL and center["active_bound_stage_count"] > 0)
 
     compiled = []
     for base in [acados_root / "lib", acados_root / "build", Path.cwd()]:
         if base.exists():
-            for p in sorted(base.rglob("*.so")):
-                if p.is_file():
-                    compiled.append({"path": str(p), "bytes": p.stat().st_size, "sha256": sha256_file(p)})
-    compiled = list({x["path"]: x for x in compiled}.values())
+            for path in sorted(base.rglob("*.so")):
+                if path.is_file():
+                    compiled.append({"path": str(path), "bytes": path.stat().st_size, "sha256": sha256_file(path)})
+    compiled = list({item["path"]: item for item in compiled}.values())
     compiled_pass = bool(compiled)
 
     pass_all = bool(target_pass and active_pass and envelope_pass and compiled_pass)
     receipt = {
-        "artifact_type": "RG_EXT_02_ACADOS_NON_SCIENTIFIC_PREFLIGHT_RECEIPT",
+        **common,
         "status": "PREFLIGHT_PASS" if pass_all else "PREFLIGHT_RECONCILIATION_REQUIRED",
-        "selected_commit": commit,
-        "source_clean_before_preflight": True,
-        "submodule_assertions": submodule_assertions,
-        "canonical_example": {"path": CANONICAL_EXAMPLE, "sha256": sha256_file(example_path)},
-        "canonical_model": {"path": CANONICAL_MODEL, "sha256": sha256_file(model_path)},
-        "semantic_assertions": semantic_assertions,
         "native_default_solve": center,
         "native_active_constraint_certificate": {
             "lambda_activity_tolerance": ACTIVE_LAMBDA_TOL,
@@ -253,20 +349,6 @@ def main() -> int:
         },
         "compiled_shared_libraries": compiled,
         "compiled_artifact_gate_pass": compiled_pass,
-        "runtime": {"python": sys.version, "platform": platform.platform(), "machine": platform.machine()},
-        "scientific_boundary": {
-            "alpha_estimated": False,
-            "beta_estimated": False,
-            "theta_estimated": False,
-            "predicted_class_computed": False,
-            "p_contact_predicted": False,
-            "mass_response_measured": False,
-            "boundary_H_observed": False,
-            "boundary_K_observed": False,
-            "primary_boundary_sweep_executed": False,
-            "condition_1_authorized": False,
-            "note": "Only u_max=60 and the frozen non-scientific 59.99/60.01 N convention probes were solved. No Resource Geometry scientific measurement was executed."
-        },
     }
     write_receipt(out, receipt)
     print(json.dumps({
